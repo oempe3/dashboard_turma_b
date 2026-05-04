@@ -244,7 +244,8 @@ const MES_NOMES={"01":"Janeiro","02":"Fevereiro","03":"Março","04":"Abril","05"
 let DATA={operadores:[],meses:[],dados:{},os_details:{}};
 const state={mes:"",operador:"_ALL",startDate:null,endDate:null};
 function fmtH(v){if(!v)return"0h";const h=Math.floor(v),m=Math.round((v-h)*60);return m===0?h+"h":h+"h "+String(m).padStart(2,"0")+"m"}
-function fmtNum(v,d){return Number(v||0).toFixed(d||0).replace(".",",")}
+// Formata números de horas sem casas decimais. Arredonda para inteiro.
+function fmtNum(v){return Math.round(Number(v||0))}
 function formatMesLabel(ym){if(ym==="ANUAL")return{top:"Anual",sub:"Consolidado"};const[a,m]=ym.split("-");return{top:MES_NOMES[m]||m,sub:a}}
 function $(id){return document.getElementById(id)}
 let toastTimer;
@@ -315,6 +316,92 @@ function buildFilter(){
   sel.value=current;sel.onchange=e=>{state.operador=e.target.value;render()};
 }
 
+// ==========================================================
+// KPI extras: Homem Hora e Análise de OS como gráficos do tipo donut
+//
+// calcKPI_HH: calcula a quantidade de horas disponíveis e apontadas
+// para a equipe (OPER + MANUT) com base nos dias úteis lançados
+// e no número fixo de operadores (4). Retorna também a
+// porcentagem de utilização.
+function calcKPI_HH(b){
+  const QTD_OPERADORES = 4;
+  const diasUteis = b.dias_trabalhados || 0;
+  const hhDisponivel = diasUteis * 7 * QTD_OPERADORES;
+  const hhApontado = (b.horas_oper || 0) + (b.horas_manut || 0);
+  const pct = hhDisponivel > 0 ? (hhApontado / hhDisponivel) * 100 : 0;
+  return { hhDisponivel, hhApontado, pct };
+}
+
+// calcKPI_OS: calcula a quantidade total de ordens de serviço
+// programadas (total_os) e quantas delas tiveram término efetivo
+// no período (status diferente de CONC ou FECHAR). Retorna a
+// porcentagem de efetividade.
+function calcKPI_OS(b){
+  const totalOS = b.total_os || 0;
+  let osValidas = 0;
+  const det = DATA.os_details || {};
+  Object.entries(det).forEach(([os, info]) => {
+    const st = String((info && info.status) || '').trim().toUpperCase();
+    if(st !== 'CONC' && st !== 'FECHAR'){
+      osValidas++;
+    }
+  });
+  const pct = totalOS > 0 ? (osValidas / totalOS) * 100 : 0;
+  return { totalOS, osValidas, pct };
+}
+
+// createDonut: gera um gráfico donut via SVG. O gráfico usa
+// conic fill (por meio de dasharray) e exibe a porcentagem no centro.
+function createDonut(pct, color){
+  const clamped = Math.max(0, Math.min(100, pct));
+  const dasharray = clamped + ' ' + (100 - clamped);
+  const percent = Math.round(pct);
+  return (
+    '<div style="position:relative;width:80px;height:80px;margin:0 auto;">' +
+      '<svg width="80" height="80" viewBox="0 0 42 42" style="transform:rotate(-90deg)">' +
+        '<circle cx="21" cy="21" r="15.915" fill="transparent" stroke="var(--surface-3)" stroke-width="6"></circle>' +
+        '<circle cx="21" cy="21" r="15.915" fill="transparent" stroke="' + color + '" stroke-width="6" stroke-dasharray="' + dasharray + '" stroke-linecap="round"></circle>' +
+      '</svg>' +
+      '<div style="position:absolute;top:0;left:0;width:80px;height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;">' +
+        '<div style="font-size:18px;font-weight:700;color:' + color + '">' + percent + '%</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+// renderKPIsExtras: cria dois cartões (grid-2) com donut charts
+// para Homem Hora e Análise de OS. Exibe também os valores absolutos.
+function renderKPIsExtras(b){
+  const hh = calcKPI_HH(b);
+  const os = calcKPI_OS(b);
+  const hhPct = hh.hhDisponivel > 0 ? (hh.hhApontado / hh.hhDisponivel) * 100 : 0;
+  const osPct = os.totalOS > 0 ? (os.osValidas / os.totalOS) * 100 : 0;
+  const hhDonut = createDonut(hhPct, 'var(--op)');
+  const osDonut = createDonut(osPct, 'var(--maint)');
+  return (
+    '<div class="grid-2" style="margin-top:12px">' +
+      '<div class="card">' +
+        '<h3>Homem Hora — Apontado x Disponível</h3>' +
+        '<div class="card-sub" style="margin-bottom:8px">Utilização da equipe</div>' +
+        hhDonut +
+        '<div style="margin-top:8px;font-size:11px;display:flex;justify-content:space-between;">' +
+          '<span>Apontado: ' + fmtNum(hh.hhApontado) + 'h</span>' +
+          '<span>Disponível: ' + fmtNum(hh.hhDisponivel) + 'h</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<h3>Análise Quantitativa de OS</h3>' +
+        '<div class="card-sub" style="margin-bottom:8px">Programadas x término efetivo</div>' +
+        osDonut +
+        '<div style="margin-top:8px;font-size:11px;display:flex;justify-content:space-between;">' +
+          '<span>Programadas: ' + os.totalOS + '</span>' +
+          '<span>Efetivas: ' + os.osValidas + '</span>' +
+        '</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+
 function renderKPIs(b){
   const dias=b.dias_trabalhados,ht=dias*8,hu=dias*7;
   return '<div class="kpis">'
@@ -327,19 +414,17 @@ function renderKPIs(b){
     +'</div>';
 }
 
-/* Aderência fixa:
-   _ALL:       126h por mês
-   individual: 42h por operador/mês       */
+/* Aderência dinâmica: HH Programado = dias com horas lançadas × 7h */
 function calcAder(b){
-  const isSingle=state.operador&&state.operador!=='_ALL';
-  const hhProg=isSingle?42:126;
-  const hhApt=b.horas_manut||0;
-  const pct=hhProg>0?Math.round((hhApt/hhProg)*100):0;
-  return{hhProg,hhApt,pct,fator:hhProg,isSingle};
+  const diasLancados = b.dias_trabalhados || 0;
+  const hhProg = diasLancados * 7;
+  const hhApt = b.horas_manut || 0;
+  const pct = hhProg > 0 ? Math.round((hhApt / hhProg) * 100) : 0;
+  return { hhProg, hhApt, pct, fator: hhProg, diasLancados };
 }
 
 function renderHHPanel(b){
-  const {hhProg,hhApt,pct,fator,isSingle}=calcAder(b);
+  const {hhProg,hhApt,pct,diasLancados}=calcAder(b);
   const cor=pct>=100?'#22c55e':(pct>=80?'#f59e0b':'#ef4444');
   const label=pct>=100?'Meta atingida ✓':(pct>=80?'Abaixo do previsto':'Crítico');
   const barW=Math.min(pct,100);
@@ -354,16 +439,16 @@ function renderHHPanel(b){
       +'<span style="font-size:9px;color:var(--text-dim);min-width:28px;text-align:right">'+p+'%</span>'
     +'</div>';
   }).join('');
-  const formulaStr=isSingle?'HH planejado fixo: 42h por operador/mês':'HH planejado fixo: 126h por mês';
-  const ttStr='Aderência = HH manutenção apontada / HH planejada. '+formulaStr+'. HH Programado = '+hhProg.toFixed(2)+'h';
+  const formulaStr='HH programado = dias com horas lançadas × 7h = '+diasLancados+' × 7h';
+  const ttStr='Aderência = HH manutenção apontada / HH planejada. '+formulaStr+'. HH Programado = '+fmtNum(hhProg)+'h';
   return '<div class="card" style="margin-top:12px">'
     +'<h3>HH Apontado × Programado<span class="hint" title="'+ttStr+'">?</span></h3>'
     +'<div class="card-sub" style="margin-bottom:10px">Manutenção apontada vs meta planejada</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">'
       +'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:10px;text-align:center">'
         +'<div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px">HH Programado</div>'
-        +'<div style="font-family:Outfit,sans-serif;font-size:22px;font-weight:700;color:var(--op)">'+fmtNum(hhProg,2)+'<span style="font-size:10px;color:var(--text-mute);font-weight:400">h</span></div>'
-        +'<div style="font-size:9px;color:var(--text-dim);margin-top:2px">'+(isSingle?'42h por operador':'126h por mês')+'</div>'
+        +'<div style="font-family:Outfit,sans-serif;font-size:22px;font-weight:700;color:var(--op)">'+fmtNum(hhProg)+'<span style="font-size:10px;color:var(--text-mute);font-weight:400">h</span></div>'
+        +'<div style="font-size:9px;color:var(--text-dim);margin-top:2px">'+diasLancados+' dias × 7h</div>'
       +'</div>'
       +'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:11px;padding:10px;text-align:center">'
         +'<div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px">HH Apontado (MNT)</div>'
@@ -377,7 +462,7 @@ function renderHHPanel(b){
       +'</div>'
     +'</div>'
     +'<div style="background:var(--surface-3);border-radius:999px;height:9px;overflow:hidden;margin-bottom:4px"><div style="height:100%;width:'+barW+'%;background:linear-gradient(90deg,'+cor+','+cor+'bb);border-radius:999px;transition:width .6s ease"></div></div>'
-    +'<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);margin-bottom:12px"><span>0h</span><span>Meta: '+fmtNum(hhProg,2)+'h</span><span style="color:'+cor+'">'+hhApt.toFixed(0)+'h ('+pct+'%)</span></div>'
+    +'<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);margin-bottom:12px"><span>0h</span><span>Meta: '+fmtNum(hhProg)+'h</span><span style="color:'+cor+'">'+hhApt.toFixed(0)+'h ('+pct+'%)</span></div>'
     +'<div style="font-size:9px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Detalhamento por tipo</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px">'+subtipos+'</div>'
     +'<div style="margin-top:8px;padding:6px 9px;background:var(--surface-2);border-radius:7px;font-size:9px;color:var(--text-dim)">ℹ️ OPER não entra no HH Apontado · OPER apontado: <strong style="color:var(--op)">'+hhOper.toFixed(0)+'h</strong></div>'
@@ -476,8 +561,7 @@ function renderMonthlyBoard(){
     const label=(MES_NOMES[mm]||mm)+' '+ano;
     const hO=md.horas_oper||0,hM=md.horas_manut||0,hT=md.horas_total||(hO+hM);
     const osCnt=md.total_os||0,dias=md.dias_trabalhados||0;
-    const isSingle=state.operador&&state.operador!=='_ALL';
-    const hhProg=isSingle?42:126;
+    const hhProg=dias*7;
     const aderPct=hhProg>0?(hM/hhProg)*100:0;
     const aderCor=aderPct>=100?'#22c55e':(aderPct>=80?'#f59e0b':'#ef4444');
     return '<div class="month-card">'
@@ -492,7 +576,7 @@ function renderMonthlyBoard(){
   }).filter(Boolean);
   if(!cards.length)return'';
   return '<div class="card" style="margin-top:12px">'
-    +'<h3>Resumo mensal<span class="hint" title="Aderência calculada com HH planejada fixa: 126h/mês para todos os operadores e 42h/mês por operador.">?</span></h3>'
+    +'<h3>Resumo mensal<span class="hint" title="Aderência calculada com HH programado = dias com horas lançadas × 7h.">?</span></h3>'
     +'<div class="card-sub">Evolução por mês — filtro por operador aplicado</div>'
     +'<div class="monthly-board">'+cards.join('')+'</div>'
     +'</div>';
@@ -633,6 +717,7 @@ function render(){
     '<div class="section-head"><div><h2>'+lbl.top+' <span style="color:var(--text-dim);font-weight:500">· '+lbl.sub+'</span></h2><div class="sub">'+opTitle+' · '+b.total_os+' OS · '+fmtNum(b.horas_total)+'h registradas</div></div><div style="display:flex;gap:5px;flex-wrap:wrap"><span class="pill"><span class="dot" style="background:var(--op)"></span>'+fmtNum(b.horas_oper)+'h oper</span><span class="pill"><span class="dot" style="background:var(--maint)"></span>'+fmtNum(b.horas_manut)+'h mnt</span></div></div>'
     +renderKPIs(b)
     +renderGaugeCard(b)
+    +renderKPIsExtras(b)
     +renderHHPanel(b)
     +'<div class="grid-2">'
       +'<div class="card"><h3>Horas por dia<span class="hint" title="Azul=OPER, roxo=manutenção. Passe o mouse para detalhes. Filtre por período com os campos abaixo.">?</span></h3>'
